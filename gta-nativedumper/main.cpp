@@ -8,6 +8,7 @@ struct scr_command_hash {
 struct ns {
 	// its id is where it's at.
 	std::vector<scr_command_hash> ns_hashes;
+	ns(const scr_command_hash& hash) : ns_hashes{ hash } { }
 };
 
 // avoid this because it's terribly fucking slow due to api calls
@@ -21,10 +22,22 @@ _Ty read_dyint(const process& proc, std::uintptr_t loc) {
 
 std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const std::uintptr_t addr) {
 	// returns next loc
+	return { 0, {} };
 }
 
-ns resolve_namespace(const std::uintptr_t start_address, std::shared_mutex& ns_array_mutex, std::vector<ns>& ns_array) {
+void resolve_namespace(const std::uintptr_t start_address, std::shared_mutex& ns_array_mutex, std::vector<ns>& ns_array) {
+	std::vector<scr_command_hash> ret{};
+	std::pair<std::uintptr_t, scr_command_hash> control = resolve_native_info(start_address);
+	ret.push_back(control.second);
+	while (control.first) {
+		control = resolve_native_info(control.first);
+		ret.push_back(control.second); 
+	}
 
+	ns_array_mutex.lock();
+	for (const auto& c : ret)
+		ns_array.push_back(ns{ c });
+	ns_array_mutex.unlock();
 }
 
 int main(int argc, char** argv) {
