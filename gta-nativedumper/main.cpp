@@ -8,7 +8,7 @@ struct scr_command_hash {
 struct ns {
 	// its id is where it's at.
 	std::vector<scr_command_hash> ns_hashes;
-	ns(const scr_command_hash& hash) : ns_hashes{ hash } { }
+	ns(std::vector<scr_command_hash> hashes) : ns_hashes(hashes) { }
 };
 
 // avoid this because it's terribly fucking slow due to api calls
@@ -51,27 +51,34 @@ std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& p
 		if (*reinterpret_cast<const std::uint8_t*>(_read1.data() + i) == 0xE9) {
 			cb_nxt = addr + i + *reinterpret_cast<const std::int32_t*>(_read1.data() + i + 1) + 5;
 			break;
-		}
+		}	
 	}
 	for (const auto& c : read_vec<0xB>(proc, cb_nxt)) {
 		_read2.emplace_back(c);
 	}
+
 	for (int i = 0; i < _read2.size();) {
 		switch (*reinterpret_cast<const std::uint8_t*>(_read2.data() + i)) {
 		case 0xE8:
 			i += 5; 
 			break;
 		case 0xE9:
+			if (i + 5 > _read2.size()) goto out_rni;
 			next_addr = cb_nxt + i + *reinterpret_cast<const std::int32_t*>(_read2.data() + i + 1) + 5;
 			goto out_rni;
 			break;
 		case 0x90:
 			i += 1;
 			break;
+		case 0x48:
+			goto out_rni;
+		default:
+			i++;
+			break;
 		}
 
 	}
-	out_rni:
+out_rni:
 	return { next_addr, extracted };
 }
 
@@ -85,8 +92,7 @@ void resolve_namespace(const process& proc, const std::uintptr_t start_address, 
 	}
 
 	ns_array_mutex.lock();
-	for (const auto& c : ret)
-		ns_array.push_back(ns{ c });
+	ns_array.push_back(ns{ ret });
 	ns_array_mutex.unlock();
 }
 
@@ -159,32 +165,30 @@ OUTSIDE:
 	std::shared_mutex ns_mutex;
 	std::vector<ns> new_ns;
 
-#define multi 
 	std::vector<std::thread> threads_list;
 	for (const auto& ns : namespaces) {
 		const auto next_ptr = ns + read_dyint<std::int32_t>(a, ns + 1) + 5;
 
-#ifdef multi
+
 		std::thread new_thread( resolve_namespace, std::ref(a), next_ptr, std::ref(ns_mutex), std::ref(new_ns) );
 		threads_list.push_back(std::move(new_thread));
-#else
-		resolve_namespace(std::ref(a), next_ptr, std::ref(ns_mutex), std::ref(new_ns));
-#endif
 
 	}
 
-#ifdef multi
 	int tct = 0;
-	std::cout << threads_list.size() << "\r\n";
 	for (auto& thread : threads_list) {
-		std::cout << "Blame thread: " << tct++ << "\r\n";
 		thread.join();
 	}
-#endif
-	std::cout << "nigga blender";
+
+
 	int ctr{ 0 };
+	int master = 0;
 	for (const auto& c : new_ns) {
-		console::log<console::log_severity::info>("Ns %d has %d members.", ctr++, c.ns_hashes.size());
+		const auto sz2 = c.ns_hashes.size();
+		console::log<console::log_severity::info>("Ns %d has %d members.", ctr++, sz2);
+		master += sz2;
 	}
+	console::log<console::log_severity::warn>("Total Natives: %d.", master);
+	
 	return std::cin.get(), 0;
 }
