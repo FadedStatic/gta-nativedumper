@@ -20,17 +20,67 @@ _Ty read_dyint(const process& proc, std::uintptr_t loc) {
 	return ret;
 }
 
-std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const std::uintptr_t addr) {
-	// returns next loc
-	return { 0, {} };
+template <std::size_t sz>
+std::vector<std::uint8_t> read_vec(const process& proc, std::uintptr_t loc) {
+	std::vector<std::uint8_t> vec(sz, 0);
+	std::size_t fuckin_ignore{};
+	ReadProcessMemory(proc.curr_proc, (void*)loc, vec.data(), sz, &fuckin_ignore);
+	return vec;
 }
 
-void resolve_namespace(const std::uintptr_t start_address, std::shared_mutex& ns_array_mutex, std::vector<ns>& ns_array) {
+std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& proc, const std::uintptr_t addr, bool first = false) {
+	// returns next loc
+	const auto _read1 = read_vec<0x1A>(proc, addr);
+	std::uintptr_t next_addr{ 0 }, cb_nxt{ 0 };
+	std::vector<std::uint8_t> _read2{};
+	scr_command_hash extracted{};
+	for (int i = 0; i < _read1.size();) {
+		if (*reinterpret_cast<const std::uint16_t*>(_read1.data() + i) == 0x8348) {
+			if (!first)
+				goto out_rni;
+			i += 4;
+		}
+		if (*reinterpret_cast<const std::uint16_t*>(_read1.data() + i) == 0x8D48) {
+			extracted.handler = addr + i + *reinterpret_cast<const std::int32_t*>(_read1.data() + i + 3) + 7;
+			i += 7;
+		}
+		if (*reinterpret_cast<const std::uint16_t*>(_read1.data() + i) == 0xB948) {
+			extracted.hash = *reinterpret_cast<const std::uint64_t*>(_read1.data() + i + 2);
+			i += 10;
+		}
+		if (*reinterpret_cast<const std::uint8_t*>(_read1.data() + i) == 0xE9) {
+			cb_nxt = addr + i + *reinterpret_cast<const std::int32_t*>(_read1.data() + i + 1) + 5;
+			break;
+		}
+	}
+	for (const auto& c : read_vec<0xB>(proc, cb_nxt)) {
+		_read2.emplace_back(c);
+	}
+	for (int i = 0; i < _read2.size();) {
+		switch (*reinterpret_cast<const std::uint8_t*>(_read2.data() + i)) {
+		case 0xE8:
+			i += 5; 
+			break;
+		case 0xE9:
+			next_addr = cb_nxt + i + *reinterpret_cast<const std::int32_t*>(_read2.data() + i + 1) + 5;
+			goto out_rni;
+			break;
+		case 0x90:
+			i += 1;
+			break;
+		}
+
+	}
+	out_rni:
+	return { next_addr, extracted };
+}
+
+void resolve_namespace(const process& proc, const std::uintptr_t start_address, std::shared_mutex& ns_array_mutex, std::vector<ns>& ns_array) {
 	std::vector<scr_command_hash> ret{};
-	std::pair<std::uintptr_t, scr_command_hash> control = resolve_native_info(start_address);
+	std::pair<std::uintptr_t, scr_command_hash> control = resolve_native_info(proc, start_address, true);
 	ret.push_back(control.second);
 	while (control.first) {
-		control = resolve_native_info(control.first);
+		control = resolve_native_info(proc, control.first);
 		ret.push_back(control.second); 
 	}
 
@@ -109,9 +159,32 @@ OUTSIDE:
 	std::shared_mutex ns_mutex;
 	std::vector<ns> new_ns;
 
+#define multi 
+	std::vector<std::thread> threads_list;
 	for (const auto& ns : namespaces) {
 		const auto next_ptr = ns + read_dyint<std::int32_t>(a, ns + 1) + 5;
-		resolve_namespace(next_ptr, std::ref(ns_mutex), std::ref(new_ns));
+
+#ifdef multi
+		std::thread new_thread( resolve_namespace, std::ref(a), next_ptr, std::ref(ns_mutex), std::ref(new_ns) );
+		threads_list.push_back(std::move(new_thread));
+#else
+		resolve_namespace(std::ref(a), next_ptr, std::ref(ns_mutex), std::ref(new_ns));
+#endif
+
+	}
+
+#ifdef multi
+	int tct = 0;
+	std::cout << threads_list.size() << "\r\n";
+	for (auto& thread : threads_list) {
+		std::cout << "Blame thread: " << tct++ << "\r\n";
+		thread.join();
+	}
+#endif
+	std::cout << "nigga blender";
+	int ctr{ 0 };
+	for (const auto& c : new_ns) {
+		console::log<console::log_severity::info>("Ns %d has %d members.", ctr++, c.ns_hashes.size());
 	}
 	return std::cin.get(), 0;
 }
