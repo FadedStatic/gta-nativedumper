@@ -1,0 +1,28 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="source files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="deps">
+      <UniqueIdentifier>{e07fbb48-b15c-4d53-b469-b3a9ff7029d6}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="console.hpp">
+      <Filter>source files</Filter>
+    </ClInclude>
+    <ClInclude Include="scanner.hpp">
+      <Filter>deps</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp">
+      <Filter>source files</Filter>
+    </ClCompile>
+    <ClCompile Include="scanner.cpp">
+      <Filter>deps</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>
