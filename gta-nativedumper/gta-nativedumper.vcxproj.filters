@@ -16,6 +16,9 @@
     <ClInclude Include="scanner.hpp">
       <Filter>deps</Filter>
     </ClInclude>
+    <ClInclude Include="json.hpp">
+      <Filter>deps</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">

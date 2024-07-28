@@ -132,6 +132,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="console.hpp" />
+    <ClInclude Include="json.hpp" />
     <ClInclude Include="scanner.hpp" />
   </ItemGroup>
   <ItemGroup>

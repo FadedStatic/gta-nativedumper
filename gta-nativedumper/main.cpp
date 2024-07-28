@@ -1,17 +1,21 @@
 #include "console.hpp"
 #include <fstream>
 #include "scanner.hpp"
+#include "json.hpp"
 
 struct scr_command_hash {
 	std::uintptr_t hash, handler;
+
+	NLOHMANN_DEFINE_TYPE_INTRUSIVE(scr_command_hash, hash, handler);
 };
+
 struct ns {
-	// its id is where it's at.
 	std::vector<scr_command_hash> ns_hashes;
+	
+	NLOHMANN_DEFINE_TYPE_INTRUSIVE(ns, ns_hashes);
 	ns(std::vector<scr_command_hash> hashes) : ns_hashes(hashes) { }
 };
 
-// avoid this because it's terribly fucking slow due to api calls
 template <typename _Ty>
 _Ty read_dyint(const process& proc, std::uintptr_t loc) {
 	_Ty ret{ };
@@ -23,16 +27,16 @@ _Ty read_dyint(const process& proc, std::uintptr_t loc) {
 template <std::size_t sz>
 std::vector<std::uint8_t> read_vec(const process& proc, std::uintptr_t loc) {
 	std::vector<std::uint8_t> vec(sz, 0);
-	std::size_t fuckin_ignore{};
-	ReadProcessMemory(proc.curr_proc, (void*)loc, vec.data(), sz, &fuckin_ignore);
+	std::size_t not_null_val{};
+	ReadProcessMemory(proc.curr_proc, (void*)loc, vec.data(), sz, &not_null_val);
 	return vec;
 }
 
 std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& proc, const std::uintptr_t addr, bool first = false) {
 	// returns next loc
-	const auto _read1 = read_vec<0x1A>(proc, addr);
+	const auto& _read1 = read_vec<0x1A>(proc, addr);
 	std::uintptr_t next_addr{ 0 }, cb_nxt{ 0 };
-	std::vector<std::uint8_t> _read2{};
+	std::vector<std::uint8_t>&& _read2{};
 	scr_command_hash extracted{};
 	for (int i = 0; i < _read1.size();) {
 		if (*reinterpret_cast<const std::uint16_t*>(_read1.data() + i) == 0x8348) {
@@ -40,22 +44,20 @@ std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& p
 				goto out_rni;
 			i += 4;
 		}
-		if (*reinterpret_cast<const std::uint16_t*>(_read1.data() + i) == 0x8D48) {
-			extracted.handler = addr + i + *reinterpret_cast<const std::int32_t*>(_read1.data() + i + 3) + 7;
+		else if (*reinterpret_cast<const std::uint16_t*>(_read1.data() + i) == 0x8D48) {
+			extracted.handler = addr + i + *reinterpret_cast<const std::int32_t*>(_read1.data() + i + 3) + 7 - proc.proc_base;
 			i += 7;
 		}
-		if (*reinterpret_cast<const std::uint16_t*>(_read1.data() + i) == 0xB948) {
+		else if (*reinterpret_cast<const std::uint16_t*>(_read1.data() + i) == 0xB948) {
 			extracted.hash = *reinterpret_cast<const std::uint64_t*>(_read1.data() + i + 2);
 			i += 10;
 		}
-		if (*reinterpret_cast<const std::uint8_t*>(_read1.data() + i) == 0xE9) {
+		else if (*reinterpret_cast<const std::uint8_t*>(_read1.data() + i) == 0xE9) {
 			cb_nxt = addr + i + *reinterpret_cast<const std::int32_t*>(_read1.data() + i + 1) + 5;
 			break;
 		}	
 	}
-	for (const auto& c : read_vec<0xB>(proc, cb_nxt)) {
-		_read2.emplace_back(c);
-	}
+	_read2 = read_vec<0xB>(proc, cb_nxt);
 
 	for (int i = 0; i < _read2.size();) {
 		switch (*reinterpret_cast<const std::uint8_t*>(_read2.data() + i)) {
@@ -65,18 +67,12 @@ std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& p
 		case 0xE9:
 			if (i + 5 > _read2.size()) goto out_rni;
 			next_addr = cb_nxt + i + *reinterpret_cast<const std::int32_t*>(_read2.data() + i + 1) + 5;
-			goto out_rni;
-			break;
-		case 0x90:
-			i += 1;
-			break;
 		case 0x48:
 			goto out_rni;
 		default:
 			i++;
 			break;
 		}
-
 	}
 out_rni:
 	return { next_addr, extracted };
@@ -106,8 +102,8 @@ int main(int argc, char** argv) {
 	}
 
 	const auto start_addr = VirtualAlloc(NULL, 2048, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-	std::size_t fuckin_shit;
-	ReadProcessMemory(a.curr_proc, (void*)results.at(0).loc, start_addr, 2048, &fuckin_shit);
+	std::size_t sz_read;
+	ReadProcessMemory(a.curr_proc, (void*)results.at(0).loc, start_addr, 2048, &sz_read);
 	// if sig is wrong here's the asm for it
 	/*
 	call sub_xxxx
@@ -120,22 +116,21 @@ int main(int argc, char** argv) {
 	mov [rbx+10h], rax
 	...
 	*/
-	// build a list of namespaces
 
 	std::vector<std::uintptr_t> namespaces;
 	std::unordered_map<std::uintptr_t, bool> resolved_map;
-	for (auto fuckinshit = reinterpret_cast<std::uint8_t*>((uintptr_t)start_addr + 8);;) {
-		switch (*fuckinshit) {
+	for (auto idx = reinterpret_cast<std::uint8_t*>((uintptr_t)start_addr + 8);;) {
+		switch (*idx) {
 		case 0x48:			
-			if (*reinterpret_cast<std::uint16_t*>(fuckinshit + 1) == 0x4389) 
-				fuckinshit += 4;
-			else if (*reinterpret_cast<std::uint16_t*>(fuckinshit + 1) == 0x8389) 
-				fuckinshit += 7;
-			else if (*reinterpret_cast<std::uint16_t*>(fuckinshit + 1) == 0x389) 
-				fuckinshit += 3;
-			else if (*reinterpret_cast<std::uint16_t*>(fuckinshit + 1) == 0x58D) {
-				const auto calculated = ((uintptr_t)fuckinshit - (uintptr_t)start_addr + results.at(0).loc) + *reinterpret_cast<std::int32_t*>(fuckinshit + 3) + 7;
-				fuckinshit += 7;
+			if (*reinterpret_cast<std::uint16_t*>(idx + 1) == 0x4389)
+				idx += 4;
+			else if (*reinterpret_cast<std::uint16_t*>(idx + 1) == 0x8389) 
+				idx += 7;
+			else if (*reinterpret_cast<std::uint16_t*>(idx + 1) == 0x389) 
+				idx += 3;
+			else if (*reinterpret_cast<std::uint16_t*>(idx + 1) == 0x58D) {
+				const auto calculated = ((uintptr_t)idx - (uintptr_t)start_addr + results.at(0).loc) + *reinterpret_cast<std::int32_t*>(idx + 3) + 7;
+				idx += 7;
 				if (!resolved_map.contains(calculated)) {
 					resolved_map.insert({ calculated, true });
 					namespaces.emplace_back(calculated);
@@ -148,11 +143,11 @@ int main(int argc, char** argv) {
 			}
 			break;
 		case 0x8D:
-			fuckinshit += 3;
+			idx += 3;
 			break;
 		case 0xBF:
 		case 0xBE:
-			fuckinshit += 5;
+			idx += 5;
 			break;
 		case 0xE8:
 			goto OUTSIDE;
@@ -168,11 +163,8 @@ OUTSIDE:
 	std::vector<std::thread> threads_list;
 	for (const auto& ns : namespaces) {
 		const auto next_ptr = ns + read_dyint<std::int32_t>(a, ns + 1) + 5;
-
-
 		std::thread new_thread( resolve_namespace, std::ref(a), next_ptr, std::ref(ns_mutex), std::ref(new_ns) );
 		threads_list.push_back(std::move(new_thread));
-
 	}
 
 	int tct = 0;
@@ -188,7 +180,10 @@ OUTSIDE:
 		console::log<console::log_severity::info>("Ns %d has %d members.", ctr++, sz2);
 		master += sz2;
 	}
+	nlohmann::json j = new_ns;
 	console::log<console::log_severity::warn>("Total Natives: %d.", master);
-	
+	std::ofstream out("natives.json");
+	out << j.dump(4);
+	out.close();
 	return std::cin.get(), 0;
 }
