@@ -185,5 +185,6 @@ OUTSIDE:
 	std::ofstream out("natives.json");
 	out << j.dump(4);
 	out.close();
+	console::log<console::log_severity::success>("Done! Wrote to natives.json");
 	return std::cin.get(), 0;
 }
