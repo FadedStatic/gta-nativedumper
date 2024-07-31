@@ -32,6 +32,15 @@
 constexpr auto max_modules = 512;
 constexpr auto max_processes = 1024;
 
+namespace instructions {
+	constexpr auto hash_mov = 0xb948;
+	constexpr auto rsp_sub = 0x8348;
+	constexpr auto lea = 0x8d48;
+	constexpr auto jmp = 0xe9;
+	constexpr auto call = 0xe8;
+	constexpr auto prefix = 0x48;
+}
+
 struct scan_result
 {
 	std::uintptr_t loc;
@@ -42,7 +51,7 @@ struct process
 {
 	std::uintptr_t pid, proc_base;
 	bool is32;
-	HANDLE curr_proc{ nullptr };
+	HANDLE proc_handle{ nullptr };
 	HMODULE curr_mod{ nullptr };
 
 	// process_is_owner: this basically means that your process is running on its own, not as a module of another process.
