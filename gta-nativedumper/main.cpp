@@ -35,51 +35,48 @@ std::array<std::uint8_t, sz> read_bytes(const process& proc, std::uintptr_t loc)
 std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& proc, const std::uintptr_t addr, bool first = false) {
 	// returns next loc
 	const auto init_func_bytes = read_bytes<0x1A>(proc, addr);
-
 	std::uintptr_t next_addr{ 0 }, cb_nxt{ 0 };
+
 	scr_command_hash extracted{};
-
 	for (int i = 0; i < init_func_bytes.size();) {
-		const auto word = reinterpret_cast<const std::uint16_t*>(init_func_bytes.data())[i];
-
+		const auto word = *reinterpret_cast<const std::uint16_t*>(init_func_bytes.data() + i);
 		if (word == instructions::rsp_sub) {
 			if (!first)
 				return { next_addr, extracted };
 			i += 4;
 		}
 		else if (word == instructions::lea) {
-			const auto offset = reinterpret_cast<const std::int32_t*>(init_func_bytes.data())[i + 3];
-
-			extracted.handler = addr + i + offset + 7 - proc.proc_base;
+			extracted.handler = addr + i + *reinterpret_cast<const std::int32_t*>(init_func_bytes.data() + i + 3) + 7 - proc.proc_base;
 			i += 7;
 		}
 		else if (word == instructions::hash_mov) {
-			extracted.hash = reinterpret_cast<const std::uint64_t*>(init_func_bytes.data())[i + 2];
+			extracted.hash = *reinterpret_cast<const std::uint64_t*>(init_func_bytes.data() + i + 2);
 			i += 10;
 		}
-		else if (word == instructions::jmp) {
-			cb_nxt = addr + i + reinterpret_cast<const std::int32_t*>(init_func_bytes.data())[i + 1] + 5;
+		else if (*reinterpret_cast<const std::uint8_t*>(init_func_bytes.data() + i) == 0xE9) {
+			cb_nxt = addr + i + *reinterpret_cast<const std::int32_t*>(init_func_bytes.data() + i + 1) + 5;
 			break;
 		}	
 	}
 	const auto next = read_bytes<0xB>(proc, cb_nxt);
 
 	for (int i = 0; i < next.size();) {
-		switch (next[i]) {
-			case instructions::call:
-					i += 5; 
-					break;
-			case instructions::jmp:
-					if (i + 5 > next.size()) return { next_addr, extracted };
-					next_addr = cb_nxt + i + reinterpret_cast<const std::int32_t*>(init_func_bytes.data())[i + 1] + 5;
-					[[fallthrough]]
-			case instructions::prefix:
-					return { next_addr, extracted };
-				default:
-					i++;
-					break;
+		switch (*reinterpret_cast<const std::uint8_t*>(next.data() + i)) {
+		case 0xE8:
+			i += 5;
+			break;
+		case 0xE9:
+			if (i + 5 > next.size()) return { next_addr, extracted };
+			next_addr = cb_nxt + i + *reinterpret_cast<const std::int32_t*>(next.data() + i + 1) + 5;
+			[[fallthrough]];
+		case 0x48:
+			return { next_addr, extracted };
+		default:
+			i++;
+			break;
 		}
 	}
+
 	return { next_addr, extracted };
 }
 
@@ -87,7 +84,7 @@ void resolve_namespace(const process& proc, const std::uintptr_t start_address, 
 	std::vector<scr_command_hash> ret{};
 	std::pair<std::uintptr_t, scr_command_hash> control = resolve_native_info(proc, start_address, true);
 	ret.push_back(control.second);
-	
+
 	while (control.first) {
 		control = resolve_native_info(proc, control.first);
 		ret.push_back(control.second); 
@@ -125,13 +122,12 @@ int main(int argc, char** argv) {
 
 	std::vector<std::uintptr_t> namespaces;
 	std::unordered_map<std::uintptr_t, bool> resolved_map;
-	bool leave = false;
-
 	for (auto idx = reinterpret_cast<std::uint8_t*>((uintptr_t)start_addr + 8);;) {
-		switch (*idx) {
-		case 0x48:		
-			const auto word = *reinterpret_cast<std::uint16_t*>(idx + 1);
 
+		std::uint16_t word{ };
+		switch (*idx) {
+		case 0x48:
+			word = *reinterpret_cast<std::uint16_t*>(idx + 1);
 			if (word == 0x4389)
 				idx += 4;
 			else if (word == 0x8389)
@@ -160,12 +156,10 @@ int main(int argc, char** argv) {
 			idx += 5;
 			break;
 		case 0xE8:
-			leave = true;
-			break;
+			goto OUTSIDE;
 		}
-		if (leave)
-			break;
 	}
+OUTSIDE:
 	
 	console::log<console::log_severity::success>("Found %d namespaces. If this value is nonzero, good.", namespaces.size());
 	
@@ -175,21 +169,25 @@ int main(int argc, char** argv) {
 	std::vector<std::thread> threads_list;
 	for (const auto& ns : namespaces) {
 		const auto next_ptr = ns + read_dyint<std::int32_t>(gta_proc, ns + 1) + 5;
-		threads_list.emplace_back(resolve_namespace, std::ref(gta_proc), next_ptr, std::ref(ns_mutex), std::ref(new_ns));
+		std::thread new_thread( resolve_namespace, std::ref(gta_proc), next_ptr, std::ref(ns_mutex), std::ref(new_ns) );
+		threads_list.push_back(std::move(new_thread));
 	}
 
 	for (auto& thread : threads_list)
 		thread.join();
-	
+
+
 	auto native_count = 0;
 	for (std::uint32_t idx = 0u, sz = new_ns[idx].ns_hashes.size(); idx < new_ns.size(); ++idx, native_count += sz)
 		console::log<console::log_severity::info>("Ns %d has %d members.", idx, sz);
 
 	nlohmann::json j = new_ns;
+
 	console::log<console::log_severity::warn>("Total Natives: %d.", native_count);
 	std::ofstream out("natives.json");
 	out << j.dump(4);
 	out.close();
 	console::log<console::log_severity::success>("Done! Wrote to natives.json");
+
 	return std::cin.get(), 0;
 }
