@@ -25,18 +25,18 @@ _Ty read_dyint(const process& proc, std::uintptr_t loc) {
 }
 
 template <std::size_t sz>
-std::vector<std::uint8_t> read_vec(const process& proc, std::uintptr_t loc) {
-	std::vector<std::uint8_t> vec(sz, 0);
+std::array<std::uint8_t, sz> read_bytes(const process& proc, std::uintptr_t loc) {
+	std::array<std::uint8_t, sz> arr;
 	std::size_t not_null_val{};
-	ReadProcessMemory(proc.proc_handle, (void*)loc, vec.data(), sz, &not_null_val);
-	return vec;
+	ReadProcessMemory(proc.proc_handle, (void*)loc, arr.data(), sz, &not_null_val);
+	return arr;
 }
 
 std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& proc, const std::uintptr_t addr, bool first = false) {
 	// returns next loc
-	const auto init_func_bytes = read_vec<0x1A>(proc, addr);
+	const auto init_func_bytes = read_bytes<0x1A>(proc, addr);
 	std::uintptr_t next_addr{ 0 }, cb_nxt{ 0 };
-	std::vector<std::uint8_t>&& _read2{};
+
 	scr_command_hash extracted{};
 	for (int i = 0; i < init_func_bytes.size();) {
 		const auto word = *reinterpret_cast<const std::uint16_t*>(init_func_bytes.data() + i);
@@ -58,24 +58,25 @@ std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& p
 			break;
 		}	
 	}
-	_read2 = read_vec<0xB>(proc, cb_nxt);
+	const auto next = read_bytes<0xB>(proc, cb_nxt);
 
-	for (int i = 0; i < _read2.size();) {
-		switch (*reinterpret_cast<const std::uint8_t*>(_read2.data() + i)) {
+	for (int i = 0; i < next.size();) {
+		switch (*reinterpret_cast<const std::uint8_t*>(next.data() + i)) {
 		case 0xE8:
 			i += 5; 
 			break;
 		case 0xE9:
-			if (i + 5 > _read2.size()) goto out_rni;
-			next_addr = cb_nxt + i + *reinterpret_cast<const std::int32_t*>(_read2.data() + i + 1) + 5;
+			if (i + 5 > next.size()) return { next_addr, extracted };
+			next_addr = cb_nxt + i + *reinterpret_cast<const std::int32_t*>(next.data() + i + 1) + 5;
+			[[fallthrough]];
 		case 0x48:
-			goto out_rni;
+			return { next_addr, extracted };
 		default:
 			i++;
 			break;
 		}
 	}
-out_rni:
+
 	return { next_addr, extracted };
 }
 
@@ -94,17 +95,17 @@ void resolve_namespace(const process& proc, const std::uintptr_t start_address, 
 }
 
 int main(int argc, char** argv) {
-	process a = process("GTA5.exe");
-	auto results = scanner::scan(a, "\xE8\x69\x69\x69\x69\x48\x8B\xD8\x48\x8D\x05\x69\x69\x69\x69\x48\x89\x03\x48\x8D\x05\xB5\xCC\x34\x00\x48\x89\x43\x08\x48\x8D\x05\x1A\x55\x2B\x00\x48\x89\x43\x10\x48\x8D", "x????xxxxxx????xxxxxxxxxxxxxxxxxxxxxxxxxxx");
+	const auto gta_proc = process("GTA5.exe");
+	auto results = scanner::scan(gta_proc, "\xE8\x69\x69\x69\x69\x48\x8B\xD8\x48\x8D\x05\x69\x69\x69\x69\x48\x89\x03\x48\x8D\x05\xB5\xCC\x34\x00\x48\x89\x43\x08\x48\x8D\x05\x1A\x55\x2B\x00\x48\x89\x43\x10\x48\x8D", "x????xxxxxx????xxxxxxxxxxxxxxxxxxxxxxxxxxx");
 
 	if (results.empty()) {
-		console::log<console::log_severity::error>("Could not find process.");
+		console::log<console::log_severity::error>("Could not scan for function.");
 		return std::cin.get(), -5;
 	}
 
-	const auto start_addr = VirtualAlloc(NULL, 2048, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-	std::size_t sz_read;
-	ReadProcessMemory(a.proc_handle, (void*)results.at(0).loc, start_addr, 2048, &sz_read);
+	const auto start_addr = VirtualAlloc(nullptr, 2048, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	std::size_t sz_read{};
+	ReadProcessMemory(gta_proc.proc_handle, (void*)results.at(0).loc, start_addr, 2048, &sz_read);
 	// if sig is wrong here's the asm for it
 	/*
 	call sub_xxxx
@@ -121,15 +122,18 @@ int main(int argc, char** argv) {
 	std::vector<std::uintptr_t> namespaces;
 	std::unordered_map<std::uintptr_t, bool> resolved_map;
 	for (auto idx = reinterpret_cast<std::uint8_t*>((uintptr_t)start_addr + 8);;) {
+
+		std::uint16_t word{ };
 		switch (*idx) {
 		case 0x48:			
-			if (*reinterpret_cast<std::uint16_t*>(idx + 1) == 0x4389)
+			word = *reinterpret_cast<std::uint16_t*>(idx + 1);
+			if (word == 0x4389)
 				idx += 4;
-			else if (*reinterpret_cast<std::uint16_t*>(idx + 1) == 0x8389) 
+			else if (word == 0x8389)
 				idx += 7;
-			else if (*reinterpret_cast<std::uint16_t*>(idx + 1) == 0x389) 
+			else if (word == 0x389)
 				idx += 3;
-			else if (*reinterpret_cast<std::uint16_t*>(idx + 1) == 0x58D) {
+			else if (word == 0x58D) {
 				const auto calculated = ((uintptr_t)idx - (uintptr_t)start_addr + results.at(0).loc) + *reinterpret_cast<std::int32_t*>(idx + 3) + 7;
 				idx += 7;
 				if (!resolved_map.contains(calculated)) {
@@ -163,29 +167,27 @@ OUTSIDE:
 
 	std::vector<std::thread> threads_list;
 	for (const auto& ns : namespaces) {
-		const auto next_ptr = ns + read_dyint<std::int32_t>(a, ns + 1) + 5;
-		std::thread new_thread( resolve_namespace, std::ref(a), next_ptr, std::ref(ns_mutex), std::ref(new_ns) );
+		const auto next_ptr = ns + read_dyint<std::int32_t>(gta_proc, ns + 1) + 5;
+		std::thread new_thread( resolve_namespace, std::ref(gta_proc), next_ptr, std::ref(ns_mutex), std::ref(new_ns) );
 		threads_list.push_back(std::move(new_thread));
 	}
 
-	int tct = 0;
 	for (auto& thread : threads_list) {
 		thread.join();
 	}
 
 
-	int ctr{ 0 };
-	int master = 0;
-	for (const auto& c : new_ns) {
-		const auto sz2 = c.ns_hashes.size();
-		console::log<console::log_severity::info>("Ns %d has %d members.", ctr++, sz2);
-		master += sz2;
-	}
+	auto native_count = 0;
+	for (std::uint32_t idx = 0u, sz = new_ns[idx].ns_hashes.size(); idx < new_ns.size(); ++idx, native_count += sz)
+		console::log<console::log_severity::info>("Ns %d has %d members.", idx, sz);
+
 	nlohmann::json j = new_ns;
-	console::log<console::log_severity::warn>("Total Natives: %d.", master);
+	
+	console::log<console::log_severity::warn>("Total Natives: %d.", native_count);
 	std::ofstream out("natives.json");
 	out << j.dump(4);
 	out.close();
 	console::log<console::log_severity::success>("Done! Wrote to natives.json");
+	
 	return std::cin.get(), 0;
 }
