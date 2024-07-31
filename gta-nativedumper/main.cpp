@@ -16,11 +16,11 @@ struct ns {
 	ns(std::vector<scr_command_hash> hashes) : ns_hashes(hashes) { }
 };
 
-template <typename _Ty>
+template <std::integral _Ty>
 _Ty read_dyint(const process& proc, std::uintptr_t loc) {
 	_Ty ret{ };
 	std::size_t not_null_val;
-	ReadProcessMemory(proc.curr_proc, (void*)loc, &ret, sizeof ret, &not_null_val);
+	ReadProcessMemory(proc.proc_handle, (void*)loc, &ret, sizeof ret, &not_null_val);
 	return ret;
 }
 
@@ -28,32 +28,33 @@ template <std::size_t sz>
 std::vector<std::uint8_t> read_vec(const process& proc, std::uintptr_t loc) {
 	std::vector<std::uint8_t> vec(sz, 0);
 	std::size_t not_null_val{};
-	ReadProcessMemory(proc.curr_proc, (void*)loc, vec.data(), sz, &not_null_val);
+	ReadProcessMemory(proc.proc_handle, (void*)loc, vec.data(), sz, &not_null_val);
 	return vec;
 }
 
 std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& proc, const std::uintptr_t addr, bool first = false) {
 	// returns next loc
-	const auto& _read1 = read_vec<0x1A>(proc, addr);
+	const auto init_func_bytes = read_vec<0x1A>(proc, addr);
 	std::uintptr_t next_addr{ 0 }, cb_nxt{ 0 };
 	std::vector<std::uint8_t>&& _read2{};
 	scr_command_hash extracted{};
-	for (int i = 0; i < _read1.size();) {
-		if (*reinterpret_cast<const std::uint16_t*>(_read1.data() + i) == 0x8348) {
+	for (int i = 0; i < init_func_bytes.size();) {
+		const auto word = *reinterpret_cast<const std::uint16_t*>(init_func_bytes.data() + i);
+		if (word == instructions::rsp_sub) {
 			if (!first)
-				goto out_rni;
+				return { next_addr, extracted };
 			i += 4;
 		}
-		else if (*reinterpret_cast<const std::uint16_t*>(_read1.data() + i) == 0x8D48) {
-			extracted.handler = addr + i + *reinterpret_cast<const std::int32_t*>(_read1.data() + i + 3) + 7 - proc.proc_base;
+		else if (word == instructions::lea) {
+			extracted.handler = addr + i + *reinterpret_cast<const std::int32_t*>(init_func_bytes.data() + i + 3) + 7 - proc.proc_base;
 			i += 7;
 		}
-		else if (*reinterpret_cast<const std::uint16_t*>(_read1.data() + i) == 0xB948) {
-			extracted.hash = *reinterpret_cast<const std::uint64_t*>(_read1.data() + i + 2);
+		else if (word == instructions::hash_mov) {
+			extracted.hash = *reinterpret_cast<const std::uint64_t*>(init_func_bytes.data() + i + 2);
 			i += 10;
 		}
-		else if (*reinterpret_cast<const std::uint8_t*>(_read1.data() + i) == 0xE9) {
-			cb_nxt = addr + i + *reinterpret_cast<const std::int32_t*>(_read1.data() + i + 1) + 5;
+		else if (*reinterpret_cast<const std::uint8_t*>(init_func_bytes.data() + i) == 0xE9) {
+			cb_nxt = addr + i + *reinterpret_cast<const std::int32_t*>(init_func_bytes.data() + i + 1) + 5;
 			break;
 		}	
 	}
@@ -103,7 +104,7 @@ int main(int argc, char** argv) {
 
 	const auto start_addr = VirtualAlloc(NULL, 2048, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 	std::size_t sz_read;
-	ReadProcessMemory(a.curr_proc, (void*)results.at(0).loc, start_addr, 2048, &sz_read);
+	ReadProcessMemory(a.proc_handle, (void*)results.at(0).loc, start_addr, 2048, &sz_read);
 	// if sig is wrong here's the asm for it
 	/*
 	call sub_xxxx

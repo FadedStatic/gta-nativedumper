@@ -22,7 +22,7 @@
 process::process() {
 	IsWow64Process(GetCurrentProcess, reinterpret_cast<BOOL*>(&this->is32));
 	this->is32 = !!this->is32;
-	this->curr_proc = GetCurrentProcess();
+	this->proc_handle = GetCurrentProcess();
 	this->curr_mod = GetModuleHandleA(nullptr);
 	this->proc_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleA(nullptr));
 	this->pid = GetCurrentProcessId();
@@ -73,7 +73,7 @@ process::process(const std::string_view process_name) {
 
 				IsWow64Process(proc_handle, reinterpret_cast<BOOL*>(&this->is32));
 				this->is32 = !!this->is32;
-				this->curr_proc = proc_handle;
+				this->proc_handle = proc_handle;
 				this->pid = i;
 				this->curr_mod = j;
 				return;
@@ -87,7 +87,7 @@ process::process(const std::string_view process_name) {
 		module_list.resize(max_modules);
 	}
 
-	this->curr_proc = nullptr;
+	this->proc_handle = nullptr;
 	this->proc_base = 0;
 	this->curr_mod = nullptr;
 	this->is32 = false;
@@ -121,10 +121,10 @@ std::vector<scan_result> scanner::scan(const process& proc, const std::string_vi
 			DWORD n_modules{ 0 };
 			std::string module_name(MAX_PATH, '\x0');
 
-			if (K32EnumProcessModulesEx(proc.curr_proc, module_list.data(), static_cast<std::uint32_t>(module_list.capacity()) * sizeof(HMODULE), &n_modules, LIST_MODULES_ALL)) {
+			if (K32EnumProcessModulesEx(proc.proc_handle, module_list.data(), static_cast<std::uint32_t>(module_list.capacity()) * sizeof(HMODULE), &n_modules, LIST_MODULES_ALL)) {
 				module_list.resize(n_modules / sizeof(HMODULE));
 				for (const auto& j : module_list) {
-					if (K32GetModuleBaseNameA(proc.curr_proc, j, module_name.data(), MAX_PATH)) {
+					if (K32GetModuleBaseNameA(proc.proc_handle, j, module_name.data(), MAX_PATH)) {
 						std::erase_if(module_name, [](const char c) {
 							return !c;
 							});
@@ -140,14 +140,14 @@ std::vector<scan_result> scanner::scan(const process& proc, const std::string_vi
 		}
 
 		MODULEINFO mod_info;
-		if (K32GetModuleInformation(proc.curr_proc, mod_found, &mod_info, sizeof(mod_info)))
+		if (K32GetModuleInformation(proc.proc_handle, mod_found, &mod_info, sizeof(mod_info)))
 			scan_base_address = reinterpret_cast<std::uintptr_t>(mod_info.lpBaseOfDll);
 	}
 
 	auto scan_end_address = ~0ull;
 	if (is_modulerange) {
 		MODULEINFO mod_info;
-		if (K32GetModuleInformation(proc.curr_proc, is_internal ? GetModuleHandleA(config.module_scanned.data()) : mod_found, &mod_info, sizeof(mod_info)))
+		if (K32GetModuleInformation(proc.proc_handle, is_internal ? GetModuleHandleA(config.module_scanned.data()) : mod_found, &mod_info, sizeof(mod_info)))
 			scan_end_address = scan_base_address + mod_info.SizeOfImage;
 	}
 
@@ -158,7 +158,7 @@ std::vector<scan_result> scanner::scan(const process& proc, const std::string_vi
 
 	for (auto scan_address = scan_base_address; scan_address < scan_end_address; scan_address += 16) {
 		// Credits to Fishy.
-		if (is_internal ? !VirtualQuery(reinterpret_cast<LPCVOID>(scan_address), &mbi, sizeof(MEMORY_BASIC_INFORMATION)) : !VirtualQueryEx(proc.curr_proc, reinterpret_cast<LPCVOID>(scan_address), &mbi, sizeof(MEMORY_BASIC_INFORMATION)))
+		if (is_internal ? !VirtualQuery(reinterpret_cast<LPCVOID>(scan_address), &mbi, sizeof(MEMORY_BASIC_INFORMATION)) : !VirtualQueryEx(proc.proc_handle, reinterpret_cast<LPCVOID>(scan_address), &mbi, sizeof(MEMORY_BASIC_INFORMATION)))
 			break;
 
 		if (config.page_flag_check(mbi)) {
@@ -199,7 +199,7 @@ void scanner_cfg_templates::aob_scan_routine_external_default(const scanner_args
 
 	std::vector<scan_result> local_results;
 
-	ReadProcessMemory(proc.curr_proc, reinterpret_cast<LPCVOID>(start), page_memory.data(), page_size, reinterpret_cast<SIZE_T*>(&n_read));
+	ReadProcessMemory(proc.proc_handle, reinterpret_cast<LPCVOID>(start), page_memory.data(), page_size, reinterpret_cast<SIZE_T*>(&n_read));
 
 	for (std::uintptr_t i = 0ull; i < page_memory.size(); i++) {
 		for (std::uintptr_t j = 0ull; j < mask.length(); j++)
@@ -270,7 +270,7 @@ void scanner_cfg_templates::string_xref_scan_external_default(const scanner_args
 	// Chunking, instead of locking the mutex (very slow) just do it when we're done.
 	std::vector<scan_result> local_results;
 
-	ReadProcessMemory(proc.curr_proc, reinterpret_cast<LPCVOID>(start), page_memory.data(), page_size, reinterpret_cast<SIZE_T*>(&n_read));
+	ReadProcessMemory(proc.proc_handle, reinterpret_cast<LPCVOID>(start), page_memory.data(), page_size, reinterpret_cast<SIZE_T*>(&n_read));
 
 	for (std::uintptr_t i = 0ull; i < page_memory.size(); i++) {
 		switch (page_memory[i]) {
@@ -405,7 +405,7 @@ void scanner_cfg_templates::function_xref_scan_external_default(const scanner_ar
 
 	std::vector<scan_result> local_results;
 
-	ReadProcessMemory(proc.curr_proc, reinterpret_cast<LPCVOID>(start), page_memory.data(), page_size, reinterpret_cast<SIZE_T*>(&n_read));
+	ReadProcessMemory(proc.proc_handle, reinterpret_cast<LPCVOID>(start), page_memory.data(), page_size, reinterpret_cast<SIZE_T*>(&n_read));
 
 	for (std::uintptr_t i = 0ull; i < page_memory.size(); i++) {
 		switch (page_memory[i]) {
@@ -497,13 +497,13 @@ auto util::get_prologue(const process& proc, const std::uintptr_t func) -> std::
 	MEMORY_BASIC_INFORMATION mbi;
 
 	if (proc.pid != GetCurrentProcessId()) {
-		VirtualQueryEx(proc.curr_proc, reinterpret_cast<LPCVOID>(func), &mbi, sizeof MEMORY_BASIC_INFORMATION);
+		VirtualQueryEx(proc.proc_handle, reinterpret_cast<LPCVOID>(func), &mbi, sizeof MEMORY_BASIC_INFORMATION);
 
 		const auto page_size = mbi.RegionSize;
 		std::size_t n_read;
 		std::vector<std::uint8_t> page_memory(page_size);
 		const auto base_address = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-		ReadProcessMemory(proc.curr_proc, reinterpret_cast<LPCVOID>(base_address), page_memory.data(), page_size - (func - base_address), reinterpret_cast<SIZE_T*>(&n_read));
+		ReadProcessMemory(proc.proc_handle, reinterpret_cast<LPCVOID>(base_address), page_memory.data(), page_size - (func - base_address), reinterpret_cast<SIZE_T*>(&n_read));
 
 		for (auto loc = (func - (func % 16)) - base_address; loc > 0; loc -= 16) {
 			switch (page_memory[loc]) {
@@ -593,14 +593,14 @@ auto util::get_prologue(const process& proc, const std::uintptr_t func) -> std::
 auto util::get_epilogue(const process& proc, const std::uintptr_t func, const bool all_alignment, const std::uint32_t min_alignment) -> std::expected<std::uintptr_t, std::string> {
 	MEMORY_BASIC_INFORMATION mbi;
 	if (proc.pid != GetCurrentProcessId()) {
-		VirtualQueryEx(proc.curr_proc, reinterpret_cast<LPCVOID>(func), &mbi, sizeof MEMORY_BASIC_INFORMATION);
+		VirtualQueryEx(proc.proc_handle, reinterpret_cast<LPCVOID>(func), &mbi, sizeof MEMORY_BASIC_INFORMATION);
 
 		const auto base_address = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
 		const auto page_size = base_address + mbi.RegionSize - func;
 		std::size_t n_read;
 		std::vector<std::uint8_t> page_memory(page_size);
 		auto remaining = 0ull;
-		ReadProcessMemory(proc.curr_proc, reinterpret_cast<LPCVOID>(func), page_memory.data(), page_size, reinterpret_cast<SIZE_T*>(&n_read));
+		ReadProcessMemory(proc.proc_handle, reinterpret_cast<LPCVOID>(func), page_memory.data(), page_size, reinterpret_cast<SIZE_T*>(&n_read));
 
 		for (auto loc = 0ull; loc < page_size; loc++)
 		{
@@ -701,13 +701,13 @@ std::vector<scan_result> util::get_calls(const process& proc, const std::uintptr
 	std::vector<scan_result> scan_results;
 
 	if (proc.pid != GetCurrentProcessId()) {
-		VirtualQueryEx(proc.curr_proc, reinterpret_cast<LPCVOID>(func_base), &mbi, sizeof MEMORY_BASIC_INFORMATION);
+		VirtualQueryEx(proc.proc_handle, reinterpret_cast<LPCVOID>(func_base), &mbi, sizeof MEMORY_BASIC_INFORMATION);
 
 		const auto func_sz = func_end - func_base + 1;
 
 		std::size_t n_read;
 		std::vector<std::uint8_t> page_memory(func_sz);
-		ReadProcessMemory(proc.curr_proc, reinterpret_cast<LPCVOID>(func_base), page_memory.data(), func_sz, reinterpret_cast<SIZE_T*>(&n_read));
+		ReadProcessMemory(proc.proc_handle, reinterpret_cast<LPCVOID>(func_base), page_memory.data(), func_sz, reinterpret_cast<SIZE_T*>(&n_read));
 
 		std::uintptr_t rel_loc{ 0 };
 		for (auto loc = 0ull; loc < func_sz; loc++) {
@@ -756,13 +756,13 @@ std::vector<scan_result> util::get_jumps(const process& proc, const std::uintptr
 
 
 	if (proc.pid != GetCurrentProcessId()) {
-		VirtualQueryEx(proc.curr_proc, reinterpret_cast<LPCVOID>(func_base), &mbi, sizeof MEMORY_BASIC_INFORMATION);
+		VirtualQueryEx(proc.proc_handle, reinterpret_cast<LPCVOID>(func_base), &mbi, sizeof MEMORY_BASIC_INFORMATION);
 
 		const auto func_sz = func_end - func_base + 1;
 
 		std::size_t n_read;
 		std::vector<std::uint8_t> page_memory(func_sz);
-		ReadProcessMemory(proc.curr_proc, reinterpret_cast<LPCVOID>(func_base), page_memory.data(), func_sz, reinterpret_cast<SIZE_T*>(&n_read));
+		ReadProcessMemory(proc.proc_handle, reinterpret_cast<LPCVOID>(func_base), page_memory.data(), func_sz, reinterpret_cast<SIZE_T*>(&n_read));
 
 		std::uintptr_t rel_loc{ 0 };
 
