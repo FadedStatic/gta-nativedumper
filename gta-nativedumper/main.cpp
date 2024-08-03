@@ -5,7 +5,7 @@
 
 struct scr_command_hash {
 	std::string hash;
-	std::uintptr_t handler;
+	std::uintptr_t handler{};
 
 	NLOHMANN_DEFINE_TYPE_INTRUSIVE(scr_command_hash, hash, handler);
 };
@@ -20,7 +20,7 @@ struct ns {
 template <std::integral _Ty>
 _Ty read_dyint(const process& proc, std::uintptr_t loc) {
 	_Ty ret{ };
-	std::size_t not_null_val;
+	std::size_t not_null_val{};
 	ReadProcessMemory(proc.proc_handle, (void*)loc, &ret, sizeof ret, &not_null_val);
 	return ret;
 }
