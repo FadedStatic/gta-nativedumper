@@ -4,7 +4,8 @@
 #include "json.hpp"
 
 struct scr_command_hash {
-	std::uintptr_t hash, handler;
+	std::string hash;
+	std::uintptr_t handler;
 
 	NLOHMANN_DEFINE_TYPE_INTRUSIVE(scr_command_hash, hash, handler);
 };
@@ -34,26 +35,27 @@ std::array<std::uint8_t, sz> read_bytes(const process& proc, std::uintptr_t loc)
 
 std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& proc, const std::uintptr_t addr, bool first = false) {
 	// returns next loc
-	const auto init_func_bytes = read_bytes<0x1A>(proc, addr);
+	const auto init_func_bytes = read_bytes<26>(proc, addr);
 	std::uintptr_t next_addr{ 0 }, cb_nxt{ 0 };
 
 	scr_command_hash extracted{};
 	for (int i = 0; i < init_func_bytes.size();) {
-		const auto word = *reinterpret_cast<const std::uint16_t*>(init_func_bytes.data() + i);
+		const auto cursor = init_func_bytes.data() + i;
+		const auto word = *reinterpret_cast<const std::uint16_t*>(cursor);
 		if (word == instructions::rsp_sub) {
 			if (!first)
 				return { next_addr, extracted };
 			i += 4;
 		}
 		else if (word == instructions::lea) {
-			extracted.handler = addr + i + *reinterpret_cast<const std::int32_t*>(init_func_bytes.data() + i + 3) + 7 - proc.proc_base;
+			extracted.handler = addr + i + *reinterpret_cast<const std::int32_t*>(cursor + 3) + 7 - proc.proc_base;
 			i += 7;
 		}
 		else if (word == instructions::hash_mov) {
-			extracted.hash = *reinterpret_cast<const std::uint64_t*>(init_func_bytes.data() + i + 2);
+			extracted.hash = std::to_string(*reinterpret_cast<const std::int64_t*>(cursor + 2));
 			i += 10;
 		}
-		else if (*reinterpret_cast<const std::uint8_t*>(init_func_bytes.data() + i) == 0xE9) {
+		else if (*reinterpret_cast<const std::uint8_t*>(cursor) == 0xE9) {
 			cb_nxt = addr + i + *reinterpret_cast<const std::int32_t*>(init_func_bytes.data() + i + 1) + 5;
 			break;
 		}	
@@ -80,7 +82,8 @@ std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& p
 	return { next_addr, extracted };
 }
 
-void resolve_namespace(const process& proc, const std::uintptr_t start_address, std::shared_mutex& ns_array_mutex, std::vector<ns>& ns_array) {
+void resolve_namespace(const process& proc, const std::uintptr_t start_address, std::mutex& ns_array_mutex, std::vector<ns>& ns_array) {
+	std::lock_guard mutex_lock{ ns_array_mutex };
 	std::vector<scr_command_hash> ret{};
 	std::pair<std::uintptr_t, scr_command_hash> control = resolve_native_info(proc, start_address, true);
 	ret.push_back(control.second);
@@ -90,9 +93,7 @@ void resolve_namespace(const process& proc, const std::uintptr_t start_address, 
 		ret.push_back(control.second); 
 	}
 
-	ns_array_mutex.lock();
 	ns_array.push_back(ns{ ret });
-	ns_array_mutex.unlock();
 }
 
 int main(int argc, char** argv) {
@@ -163,7 +164,7 @@ OUTSIDE:
 	
 	console::log<console::log_severity::success>("Found %d namespaces. If this value is nonzero, good.", namespaces.size());
 	
-	std::shared_mutex ns_mutex;
+	std::mutex ns_mutex;
 	std::vector<ns> new_ns;
 
 	std::vector<std::thread> threads_list;
@@ -179,7 +180,7 @@ OUTSIDE:
 
 	auto native_count = 0;
 	for (std::uint32_t idx = 0u, sz = new_ns[idx].ns_hashes.size(); idx < new_ns.size(); ++idx, native_count += sz)
-		console::log<console::log_severity::info>("Ns %d has %d members.", idx, sz);
+		console::log<console::log_severity::info>("Namespace %d has %d members.", idx, sz);
 
 	nlohmann::json j = new_ns;
 
