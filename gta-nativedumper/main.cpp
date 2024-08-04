@@ -1,48 +1,56 @@
 #include "console.hpp"
 #include <fstream>
 #include "scanner.hpp"
-#include "json.hpp"
+#include "json/json.h"
 
 struct scr_command_hash {
-	std::string hash;
-	std::uintptr_t handler{};
-
-	NLOHMANN_DEFINE_TYPE_INTRUSIVE(scr_command_hash, hash, handler);
+	std::uint64_t hash;
+	std::uint64_t handler;
+	void serialize(Json::Value& root) const {
+		// im revoking this fucking json library's hamster p rivileges
+		root["hash"] = std::vformat("0x{:02X}", std::make_format_args(hash)).c_str();
+		root["handler"] = std::vformat("0x{:02X}", std::make_format_args(handler)).c_str();
+	}
 };
 
 struct ns {
 	std::vector<scr_command_hash> ns_hashes;
-	
-	NLOHMANN_DEFINE_TYPE_INTRUSIVE(ns, ns_hashes);
-	ns(std::vector<scr_command_hash> hashes) : ns_hashes(hashes) { }
+	void serialize(Json::Value& root) const {
+		Json::Value hashes;
+		for (const auto& hash : ns_hashes) {
+			Json::Value hash_json;
+			hash.serialize(hash_json);
+			hashes.append(hash_json);
+		}
+		root["ns_hashes"] = hashes;
+	}
+	explicit ns(const std::vector<scr_command_hash>& hashes) : ns_hashes(hashes) { }
 };
-
 template <std::integral _Ty>
-_Ty read_dyint(const process& proc, std::uintptr_t loc) {
+_Ty read_dyint(const process& proc, const std::uintptr_t loc) {
 	_Ty ret{ };
 	std::size_t not_null_val{};
-	ReadProcessMemory(proc.proc_handle, (void*)loc, &ret, sizeof ret, &not_null_val);
+	ReadProcessMemory(proc.proc_handle, reinterpret_cast<void*>(loc), &ret, sizeof ret, &not_null_val);
 	return ret;
 }
 
 template <std::size_t sz>
-std::array<std::uint8_t, sz> read_bytes(const process& proc, std::uintptr_t loc) {
+std::array<std::uint8_t, sz> read_bytes(const process& proc, const std::uintptr_t loc) {
 	std::array<std::uint8_t, sz> arr;
 	std::size_t not_null_val{};
-	ReadProcessMemory(proc.proc_handle, (void*)loc, arr.data(), sz, &not_null_val);
+	ReadProcessMemory(proc.proc_handle, reinterpret_cast<void*>(loc), arr.data(), sz, &not_null_val);
 	return arr;
 }
 
-std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& proc, const std::uintptr_t addr, bool first = false) {
+std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& proc, const std::uintptr_t addr, const bool first = false) {
 	// returns next loc
 	const auto init_func_bytes = read_bytes<26>(proc, addr);
 	std::uintptr_t next_addr{ 0 }, cb_nxt{ 0 };
 
 	scr_command_hash extracted{};
-	for (int i = 0; i < init_func_bytes.size();) {
+	for (std::size_t i = 0; i < init_func_bytes.size();) {
 		const auto cursor = init_func_bytes.data() + i;
-		const auto word = *reinterpret_cast<const std::uint16_t*>(cursor);
-		if (word == instructions::rsp_sub) {
+		if (const auto word = *reinterpret_cast<const std::uint16_t*>(cursor); word == instructions::rsp_sub) {
 			if (!first)
 				return { next_addr, extracted };
 			i += 4;
@@ -52,7 +60,7 @@ std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& p
 			i += 7;
 		}
 		else if (word == instructions::hash_mov) {
-			extracted.hash = std::to_string(*reinterpret_cast<const std::int64_t*>(cursor + 2));
+			extracted.hash = *reinterpret_cast<const std::uint64_t*>(cursor + 2);
 			i += 10;
 		}
 		else if (*reinterpret_cast<const std::uint8_t*>(cursor) == 0xE9) {
@@ -62,7 +70,7 @@ std::pair<std::uintptr_t, scr_command_hash> resolve_native_info(const process& p
 	}
 	const auto next = read_bytes<0xB>(proc, cb_nxt);
 
-	for (int i = 0; i < next.size();) {
+	for (std::size_t i = 0; i < next.size();) {
 		switch (*reinterpret_cast<const std::uint8_t*>(next.data() + i)) {
 		case 0xE8:
 			i += 5;
@@ -93,7 +101,7 @@ void resolve_namespace(const process& proc, const std::uintptr_t start_address, 
 		ret.push_back(control.second); 
 	}
 
-	ns_array.push_back(ns{ ret });
+	ns_array.emplace_back(ret);
 }
 
 int main(int argc, char** argv) {
@@ -107,7 +115,7 @@ int main(int argc, char** argv) {
 
 	const auto start_addr = VirtualAlloc(nullptr, 2048, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 	std::size_t sz_read{};
-	ReadProcessMemory(gta_proc.proc_handle, (void*)results.at(0).loc, start_addr, 2048, &sz_read);
+	ReadProcessMemory(gta_proc.proc_handle, reinterpret_cast<void*>(results.at(0).loc), start_addr, 2048, &sz_read);
 	// if sig is wrong here's the asm for it
 	/*
 	call sub_xxxx
@@ -123,7 +131,7 @@ int main(int argc, char** argv) {
 
 	std::vector<std::uintptr_t> namespaces;
 	std::unordered_map<std::uintptr_t, bool> resolved_map;
-	for (auto idx = reinterpret_cast<std::uint8_t*>((uintptr_t)start_addr + 8);;) {
+	for (auto idx = reinterpret_cast<std::uint8_t*>(reinterpret_cast<uintptr_t>(start_addr) + 8);;) {
 
 		std::uint16_t word{ };
 		switch (*idx) {
@@ -136,16 +144,14 @@ int main(int argc, char** argv) {
 			else if (word == 0x389)
 				idx += 3;
 			else if (word == 0x58D) {
-				const auto calculated = ((uintptr_t)idx - (uintptr_t)start_addr + results.at(0).loc) + *reinterpret_cast<std::int32_t*>(idx + 3) + 7;
+				const auto calculated = (reinterpret_cast<std::uintptr_t>(idx) - reinterpret_cast<std::uintptr_t>(start_addr) + results.at(0).loc) + *reinterpret_cast<std::int32_t*>(idx + 3) + 7;
 				idx += 7;
 				if (!resolved_map.contains(calculated)) {
 					resolved_map.insert({ calculated, true });
 					namespaces.emplace_back(calculated);
 				}
-				else {
-					const auto pos = std::find(namespaces.begin(), namespaces.end(), calculated);
-					if (pos != namespaces.end())
-						namespaces.erase(pos);
+				else if (const auto pos = std::ranges::find(namespaces.begin(), namespaces.end(), calculated); pos != namespaces.end()) {
+					namespaces.erase(pos);
 				}
 			}
 			break;
@@ -179,14 +185,19 @@ OUTSIDE:
 
 
 	auto native_count = 0;
-	for (std::uint32_t idx = 0u, sz = new_ns[idx].ns_hashes.size(); idx < new_ns.size(); ++idx, native_count += sz)
+	for (std::size_t idx = 0u, sz = new_ns[idx].ns_hashes.size(); idx < new_ns.size(); ++idx, native_count += sz, sz = new_ns[idx].ns_hashes.size())
 		console::log<console::log_severity::info>("Namespace %d has %d members.", idx, sz);
 
-	nlohmann::json j = new_ns;
+	Json::Value j;
+	for (const auto& ns : new_ns) {
+		Json::Value ns_json;
+		ns.serialize(ns_json);
+		j.append(ns_json);
+	}
 
 	console::log<console::log_severity::warn>("Total Natives: %d.", native_count);
 	std::ofstream out("natives.json");
-	out << j.dump(4);
+	out << j;
 	out.close();
 	console::log<console::log_severity::success>("Done! Wrote to natives.json");
 
